@@ -1,0 +1,270 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Census 2025 Staff Attendance</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+<style>
+  body { font-family: Arial; background: #f5f7fa; margin: 0; }
+  header { background: #002b5c; color: white; padding: 15px; display: flex; justify-content: space-between; align-items: center; }
+  header img { height: 65px; }
+  nav { width: 200px; float: left; background: #fff; height: 100vh; padding: 10px; box-shadow: 2px 0 5px #ccc; }
+  nav button { display:block; width:100%; margin-bottom:5px; padding:8px; cursor:pointer; }
+  main { margin-left: 210px; padding: 20px; }
+  table { border-collapse: collapse; width: 100%; margin-top: 10px; }
+  th, td { border: 1px solid #ccc; padding: 8px; text-align: left; }
+  th { background: #eee; }
+  .status-Present { background: forestgreen; color: white; }
+  .status-Late { background: tomato; color: white; }
+  .status-Leave-Early { background: orange; color: white; }
+  .status-Half-Day { background: gold; color: black; }
+  .status-Absent { background: gray; color: white; }
+  button.downloadBtn { margin: 10px 0; padding: 8px 12px; background:#002b5c; color:white; border:none; cursor:pointer; border-radius:4px; }
+  select, input[type=number] { padding: 4px; margin-right: 10px; }
+</style>
+</head>
+<body>
+
+<header>
+  <div>
+    <h2 style="margin:0;">Census 2025 Staff Attendance</h2>
+    <small>National Statistics Office</small>
+  </div>
+  <div>
+    <img src="MFED.jpg" alt="MFED Logo">
+  </div>
+</header>
+
+<nav>
+  <button onclick="showTab('login')">Login</button>
+  <button onclick="showTab('dashboard')">Dashboard</button>
+</nav>
+
+<main>
+  <!-- LOGIN TAB -->
+  <div id="loginTab">
+    <h3>Login</h3>
+    <input type="text" id="username" placeholder="Username"><br><br>
+    <input type="password" id="password" placeholder="Password"><br><br>
+    <input type="text" id="remark" placeholder="Remark"><br><br>
+    <button onclick="login()">Login</button>
+    <button onclick="logout()">Logout</button>
+    <p id="loginMsg"></p>
+  </div>
+
+  <!-- DASHBOARD TAB -->
+  <div id="dashboardTab" style="display:none;">
+    <h3>Dashboard</h3>
+    <p id="whoami"></p>
+    <label>Month:</label>
+    <select id="month"></select>
+    <label>Year:</label>
+    <input type="number" id="year" value=""><br><br>
+
+    <button class="downloadBtn" onclick="downloadExcel()">Download Excel</button>
+
+    <table id="attendanceTable">
+      <thead>
+        <tr><th>Date</th><th>Employee</th><th>Check In</th><th>Check Out</th><th>Status</th><th>Remark</th><th>GPS In</th><th>GPS Out</th></tr>
+      </thead>
+      <tbody></tbody>
+    </table>
+    <canvas id="stackedChart" height="50"></canvas>
+  </div>
+</main>
+
+<script>
+// ---------------- USERS ----------------
+const users = [
+  {user:"admin", password:"Admin@2025!", role:"admin"},
+  ...Array.from({length:25}, (_,i)=>({
+    user:`emp${String(i+1).padStart(2,'0')}`,
+    password:`staff${i+1}`,
+    role:"staff"
+  }))
+];
+
+// ---------------- DATA ----------------
+let currentUser = null;
+let attendance = JSON.parse(localStorage.getItem("attendance")) || [];
+
+// ---------------- MONTH/YEAR AUTO ----------------
+const monthSelect = document.getElementById("month");
+const monthNames = ["January","February","March","April","May","June","July","August","September","October","November","December"];
+monthNames.forEach((m,i)=>{ monthSelect.options[i] = new Option(m,m); });
+const today = new Date();
+monthSelect.value = monthNames[today.getMonth()];
+document.getElementById("year").value = today.getFullYear();
+
+// ---------------- TAB SWITCH ----------------
+function showTab(tab){
+  document.getElementById("loginTab").style.display = tab==='login'?'block':'none';
+  document.getElementById("dashboardTab").style.display = tab==='dashboard'?'block':'none';
+}
+
+// ---------------- GPS ----------------
+function getGPS(callback){
+  if(navigator.geolocation){
+    navigator.geolocation.getCurrentPosition(pos=>{
+      callback(pos.coords.latitude.toFixed(5)+','+pos.coords.longitude.toFixed(5));
+    },()=>{ callback("Unavailable"); });
+  } else callback("Unavailable");
+}
+
+// ---------------- LOGIN ----------------
+function login(){
+  const user = document.getElementById("username").value;
+  const pass = document.getElementById("password").value;
+  const remark = document.getElementById("remark").value;
+  const u = users.find(x=>x.user===user && x.password===pass);
+  if(u){
+    currentUser = user;
+    document.getElementById("loginMsg").innerText = "Login successful";
+    document.getElementById("whoami").innerText = "Logged in as: "+currentUser;
+    showTab('dashboard');
+
+    const todayStr = new Date().toISOString().split("T")[0];
+    if(!attendance.find(r=>r.Employee===currentUser && r.Date===todayStr)){
+      getGPS(gps=>{
+        attendance.push({
+          Date: todayStr,
+          Employee: currentUser,
+          CheckIn: new Date().toLocaleTimeString(),
+          CheckOut: "",
+          Status: "",
+          Remark: remark,
+          GPSIn: gps,
+          GPSOut: ""
+        });
+        saveData();
+        updateDashboard();
+      });
+    } else updateDashboard();
+  } else {
+    document.getElementById("loginMsg").innerText = "Invalid credentials";
+  }
+}
+
+// ---------------- LOGOUT ----------------
+function logout(){
+  if(currentUser){
+    const todayStr = new Date().toISOString().split("T")[0];
+    const record = attendance.find(r=>r.Employee===currentUser && r.Date===todayStr);
+
+    currentUser = null;
+    document.getElementById("loginMsg").innerText = "Logged out";
+    updateDashboard();
+    showTab('login');
+
+    if(record){
+      getGPS(gps=>{
+        record.CheckOut = new Date().toLocaleTimeString();
+        record.GPSOut = gps;
+        record.Status = calculateStatus(record.CheckIn, record.CheckOut);
+        saveData();
+        updateDashboard();
+      });
+    }
+  }
+}
+
+// ---------------- STATUS CALC ----------------
+function calculateStatus(checkIn, checkOut){
+  if(!checkIn && !checkOut) return "Absent";
+  const inTime = checkIn ? new Date("1970-01-01 " + checkIn) : null;
+  const outTime = checkOut ? new Date("1970-01-01 " + checkOut) : null;
+
+  const officeStart = new Date("1970-01-01 09:00");
+  const officeEnd = new Date("1970-01-01 17:30");
+  const lateTime = new Date("1970-01-01 10:00");
+  const leaveEarlyStart = new Date("1970-01-01 08:00");
+  const leaveEarlyEnd = new Date("1970-01-01 14:00");
+  const halfDayAM = new Date("1970-01-01 12:00");
+  const halfDayPM = new Date("1970-01-01 14:00");
+
+  if(inTime && outTime){
+    // Present
+    if(inTime <= officeStart && outTime >= officeEnd) return "Present";
+    // Late
+    if(inTime >= lateTime) return "Late";
+    // Leave Early
+    if(inTime <= leaveEarlyStart && outTime <= leaveEarlyEnd) return "Leave-Early";
+    // Half-Day: Morning or Afternoon
+    if((inTime <= halfDayAM && outTime <= halfDayPM) || (inTime >= halfDayAM && outTime >= officeEnd)) return "Half-Day";
+  }
+  if(inTime && !outTime) return "Late";
+  return "Absent";
+}
+
+// ---------------- UPDATE DASHBOARD ----------------
+function updateDashboard(){
+  const tbody = document.querySelector("#attendanceTable tbody");
+  tbody.innerHTML="";
+  const selectedMonth = monthSelect.value;
+  const selectedYear = document.getElementById("year").value;
+
+  const filtered = attendance.filter(r=>{
+    const d = new Date(r.Date);
+    return (d.getMonth()===monthNames.indexOf(selectedMonth) && d.getFullYear()==selectedYear);
+  });
+
+  filtered.forEach(r=>{
+    r.Status = calculateStatus(r.CheckIn,r.CheckOut);
+    if(currentUser!=="admin" && r.Employee!==currentUser) return; // non-admin sees only self
+    const tr = document.createElement("tr");
+    const statusClass = r.Status.replace(/\s+/g,'-');
+    tr.innerHTML = `<td>${r.Date}</td><td>${r.Employee}</td><td>${r.CheckIn}</td><td>${r.CheckOut}</td><td class="status-${statusClass}">${r.Status}</td><td>${r.Remark}</td><td>${r.GPSIn||''}</td><td>${r.GPSOut||''}</td>`;
+    tbody.appendChild(tr);
+  });
+  drawChart(filtered);
+  saveData();
+}
+
+// ---------------- CHART ----------------
+function drawChart(data){
+  const ctx = document.getElementById('stackedChart').getContext('2d');
+  const counts = {};
+  data.forEach(r=>{
+    if(!counts[r.Employee]) counts[r.Employee] = {"Present":0,"Late":0,"Leave-Early":0,"Half-Day":0,"Absent":0};
+    counts[r.Employee][r.Status] = (counts[r.Employee][r.Status]||0)+1;
+  });
+  const labels = Object.keys(counts);
+  const presentData = labels.map(l=>counts[l]["Present"]||0);
+  const lateData = labels.map(l=>counts[l]["Late"]||0);
+  const leaveData = labels.map(l=>counts[l]["Leave-Early"]||0);
+  const halfDayData = labels.map(l=>counts[l]["Half-Day"]||0);
+  const absentData = labels.map(l=>counts[l]["Absent"]||0);
+
+  if(window.myChart) window.myChart.destroy();
+  window.myChart = new Chart(ctx,{
+    type:'bar',
+    data:{
+      labels: labels,
+      datasets:[
+        {label:'Present', data: presentData, backgroundColor:'forestgreen'},
+        {label:'Late', data: lateData, backgroundColor:'tomato'},
+        {label:'Leave Early', data: leaveData, backgroundColor:'orange'},
+        {label:'Half-Day', data: halfDayData, backgroundColor:'gold'},
+        {label:'Absent', data: absentData, backgroundColor:'gray'}
+      ]
+    },
+    options:{responsive:true, plugins:{title:{display:true,text:'Attendance Status'}}}
+  });
+}
+
+// ---------------- DOWNLOAD ----------------
+function downloadExcel(){
+  const ws = XLSX.utils.json_to_sheet(attendance);
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, "Attendance");
+  XLSX.writeFile(wb, "attendance.xlsx");
+}
+
+// ---------------- LOCAL STORAGE ----------------
+function saveData(){
+  localStorage.setItem("attendance", JSON.stringify(attendance));
+}
+</script>
+</body>
+</html>
