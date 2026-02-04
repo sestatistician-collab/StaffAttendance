@@ -1,0 +1,285 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Census 2025 Staff Attendance</title>
+
+<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+
+<style>
+body { font-family: Arial; background:#f5f7fa; margin:0; }
+header { background:#002b5c; color:white; padding:15px; display:flex; justify-content:space-between; align-items:center; }
+header img { height:65px; }
+
+nav { width:200px; float:left; background:white; height:100vh; padding:10px; box-shadow:2px 0 5px #ccc; }
+nav button { width:100%; padding:8px; margin-bottom:5px; cursor:pointer; }
+
+main { margin-left:210px; padding:20px; }
+
+table { border-collapse:collapse; width:100%; margin-top:10px; }
+th,td { border:1px solid #ccc; padding:8px; }
+th { background:#eee; }
+
+.status-Present { background:forestgreen; color:white; }
+.status-Late { background:tomato; color:white; }
+.status-Leave-Early { background:orange; color:white; }
+.status-Half-Day { background:gold; color:black; }
+.status-Absent { background:gray; color:white; }
+.status-Not-Applicable { background:#6c757d; color:white; }
+
+button.downloadBtn { margin:10px 0; padding:8px 12px; background:#002b5c; color:white; border:none; border-radius:4px; cursor:pointer; }
+
+input, select { padding:5px; margin-bottom:5px; width:200px; }
+</style>
+</head>
+
+<body>
+
+<header>
+  <div>
+    <h2 style="margin:0;">Census 2025 Staff Attendance</h2>
+    <small>National Statistics Office</small>
+  </div>
+  <img src="MFED.jpg" alt="MFED Logo">
+</header>
+
+<nav>
+  <button onclick="showTab('login')">Login</button>
+  <button onclick="showTab('dashboard')">Dashboard</button>
+</nav>
+
+<main>
+
+<!-- LOGIN -->
+<div id="loginTab">
+  <h3>Login</h3>
+  <input id="username" placeholder="Username"><br>
+  <input id="password" type="password" placeholder="Password"><br>
+  <input id="remark" placeholder="Remark (optional)"><br>
+  <button onclick="login()">Login</button>
+  <button onclick="logout()">Logout</button>
+  <p id="loginMsg"></p>
+</div>
+
+<!-- DASHBOARD -->
+<div id="dashboardTab" style="display:none;">
+  <h3>Dashboard</h3>
+  <p id="whoami"></p>
+
+  Month:
+  <select id="month"></select>
+
+  Year:
+  <input type="number" id="year">
+
+  <br><br>
+
+  <button class="downloadBtn" onclick="downloadExcel()">Download Excel</button>
+
+  <table>
+    <thead>
+      <tr>
+        <th>Date</th>
+        <th>Employee</th>
+        <th>Check In</th>
+        <th>Check Out</th>
+        <th>Hours</th>
+        <th>Status</th>
+        <th>Remark</th>
+        <th>GPS In</th>
+        <th>GPS Out</th>
+      </tr>
+    </thead>
+    <tbody id="attendanceBody"></tbody>
+  </table>
+
+  <canvas id="chart" height="40"></canvas>
+</div>
+
+</main>
+
+<script>
+// -------- USERS (SIMPLE PASSWORDS) --------
+const users = [
+  { user: "admin", password: "admin", role: "admin" },
+
+  ...Array.from({ length: 25 }, (_, i) => ({
+    user: `emp${String(i + 1).padStart(2, "0")}`,
+    password: `staff${String(i + 1).padStart(2, "0")}`,
+    role: "staff"
+  }))
+];
+// -------- DATA --------
+let currentUser=null;
+let attendance=JSON.parse(localStorage.getItem("attendance"))||[];
+
+// -------- MONTH/YEAR --------
+const months=["January","February","March","April","May","June","July","August","September","October","November","December"];
+const monthSelect=document.getElementById("month");
+months.forEach(m=>monthSelect.add(new Option(m,m)));
+const today=new Date();
+monthSelect.value=months[today.getMonth()];
+document.getElementById("year").value=today.getFullYear();
+
+// -------- TABS --------
+function showTab(tab){
+  loginTab.style.display=tab==="login"?"block":"none";
+  dashboardTab.style.display=tab==="dashboard"?"block":"none";
+}
+
+// -------- GPS --------
+function getGPS(cb){
+  navigator.geolocation?
+    navigator.geolocation.getCurrentPosition(p=>cb(`${p.coords.latitude.toFixed(5)},${p.coords.longitude.toFixed(5)}`),
+    ()=>cb("Unavailable"))
+    :cb("Unavailable");
+}
+
+// -------- TIME HELPERS --------
+function nowTime(){ return new Date(); }
+function isWithinAllowedHours(){
+  const t=nowTime();
+  const start=new Date(); start.setHours(8,0,0);
+  const end=new Date(); end.setHours(20,30,0);
+  return t>=start && t<=end;
+}
+
+// -------- LOGIN --------
+function login(){
+  const u=document.getElementById("username").value;
+  const p=document.getElementById("password").value;
+  const remark=document.getElementById("remark").value;
+  const user=users.find(x=>x.user===u && x.password===p);
+
+  if(!user){ loginMsg.innerText="Invalid credentials"; return; }
+
+  // Staff time restriction
+  if(user.role==="staff" && !isWithinAllowedHours()){
+    loginMsg.innerText="Login not allowed outside 08:00–20:30";
+    return;
+  }
+
+  currentUser=u;
+  whoami.innerText="Logged in as: "+u;
+  loginMsg.innerText="Login successful";
+  showTab("dashboard");
+
+  if(user.role==="admin"){ updateDashboard(); return; }
+
+  const date=today.toISOString().split("T")[0];
+  if(!attendance.find(r=>r.Employee===u && r.Date===date)){
+    getGPS(gps=>{
+      attendance.push({
+        Date:date, Employee:u,
+        CheckIn:new Date().toLocaleTimeString(),
+        CheckOut:"",
+        Hours:"",
+        Status:"",
+        Remark:remark,
+        GPSIn:gps, GPSOut:""
+      });
+      save();
+      updateDashboard();
+    });
+  }
+}
+
+// -------- LOGOUT --------
+function logout(){
+  if(!currentUser) return;
+  const user=users.find(u=>u.user===currentUser);
+
+  if(user.role==="admin"){ currentUser=null; showTab("login"); return; }
+
+  const date=today.toISOString().split("T")[0];
+  const rec=attendance.find(r=>r.Employee===currentUser && r.Date===date);
+
+  if(rec){
+    getGPS(gps=>{
+      rec.CheckOut=new Date().toLocaleTimeString();
+      rec.GPSOut=gps;
+      rec.Hours=calcHours(rec.CheckIn,rec.CheckOut);
+      rec.Status=calcStatus(rec.CheckIn);
+      save(); updateDashboard();
+    });
+  }
+  currentUser=null;
+  showTab("login");
+}
+
+// -------- CALCULATIONS --------
+function calcHours(i,o){
+  if(!i||!o) return "";
+  const a=new Date("1970-01-01 "+i);
+  const b=new Date("1970-01-01 "+o);
+  return ((b-a)/3600000).toFixed(2);
+}
+
+function calcStatus(checkIn){
+  const t=new Date("1970-01-01 "+checkIn);
+  const start=new Date("1970-01-01 08:00");
+  const end=new Date("1970-01-01 20:30");
+  if(t<start||t>end) return "Not Applicable";
+  if(t<=new Date("1970-01-01 09:00")) return "Present";
+  if(t<=new Date("1970-01-01 10:00")) return "Late";
+  return "Late";
+}
+
+// -------- DASHBOARD --------
+function updateDashboard(){
+  attendanceBody.innerHTML="";
+  const m=monthSelect.value, y=year.value;
+
+  const data=attendance.filter(r=>{
+    const d=new Date(r.Date);
+    return d.getMonth()===months.indexOf(m) && d.getFullYear()==y;
+  });
+
+  data.forEach(r=>{
+    if(currentUser!=="admin" && r.Employee!==currentUser) return;
+    r.Status=r.Status||calcStatus(r.CheckIn);
+    const tr=document.createElement("tr");
+    tr.innerHTML=`
+      <td>${r.Date}</td>
+      <td>${r.Employee}</td>
+      <td>${r.CheckIn}</td>
+      <td>${r.CheckOut}</td>
+      <td>${r.Hours}</td>
+      <td class="status-${r.Status.replace(" ","-")}">${r.Status}</td>
+      <td>${r.Remark}</td>
+      <td>${r.GPSIn}</td>
+      <td>${r.GPSOut}</td>`;
+    attendanceBody.appendChild(tr);
+  });
+  drawChart(data);
+}
+
+// -------- CHART --------
+function drawChart(data){
+  const ctx=document.getElementById("chart");
+  const count={};
+  data.forEach(r=>{
+    count[r.Employee]=count[r.Employee]||0;
+    if(r.Status==="Present") count[r.Employee]++;
+  });
+  if(window.c) c.destroy();
+  c=new Chart(ctx,{type:"bar",
+    data:{labels:Object.keys(count),
+      datasets:[{label:"Present Days",data:Object.values(count)}]},
+    options:{responsive:true}});
+}
+
+// -------- DOWNLOAD --------
+function downloadExcel(){
+  const ws=XLSX.utils.json_to_sheet(attendance);
+  const wb=XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb,ws,"Attendance");
+  XLSX.writeFile(wb,"attendance.xlsx");
+}
+
+function save(){ localStorage.setItem("attendance",JSON.stringify(attendance)); }
+</script>
+
+</body>
+</html>
